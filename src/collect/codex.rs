@@ -13,7 +13,7 @@ use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
-use super::{Found, basename, procfs};
+use super::{Found, basename, process};
 use crate::scene::{Kind, State, Why};
 use crate::usage::codex_dir;
 
@@ -68,17 +68,17 @@ pub struct Codex {
 fn processes() -> Vec<Process> {
     let sessions = codex_dir().join("sessions");
     let mut out = Vec::new();
-    for pid in procfs::pids() {
-        let Some(exe) = procfs::exe(pid) else { continue };
+    for pid in process::pids() {
+        let Some(exe) = process::exe(pid) else { continue };
         let exe = exe.to_string_lossy();
         if basename(exe.strip_suffix(" (deleted)").unwrap_or(&exe)) != "codex" {
             continue;
         }
-        let (Some(args), Some(cwd)) = (procfs::args(pid), procfs::cwd(pid)) else { continue };
+        let (Some(args), Some(cwd)) = (process::args(pid), process::cwd(pid)) else { continue };
         if args.iter().find(|a| !a.starts_with('-')).is_some_and(|a| NOT_TUI.contains(&a.as_str())) {
             continue;
         }
-        let mut rollouts: Vec<PathBuf> = procfs::open_files(pid)
+        let mut rollouts: Vec<PathBuf> = process::open_files(pid)
             .into_iter()
             .filter(|t| {
                 let b = t.file_name().map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
@@ -87,7 +87,7 @@ fn processes() -> Vec<Process> {
             .collect();
         rollouts.sort();
         rollouts.dedup();
-        out.push(Process { pid, cwd: cwd.to_string_lossy().into_owned(), rollouts, start: procfs::start_epoch(pid) });
+        out.push(Process { pid, cwd: cwd.to_string_lossy().into_owned(), rollouts, start: process::start_epoch(pid) });
     }
     out
 }

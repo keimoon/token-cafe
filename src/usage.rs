@@ -319,7 +319,9 @@ impl Default for Counter {
 
 impl Counter {
     pub fn new() -> Self {
-        let dir = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache"));
+        let dir = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| {
+            if cfg!(target_os = "macos") { home().join("Library/Caches") } else { home().join(".cache") }
+        });
         let cache_path = dir.join("token-cafe").join("usage.json");
         let cache = Self::load(&cache_path).unwrap_or_default();
         Counter { cache, cache_path }

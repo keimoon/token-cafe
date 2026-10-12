@@ -15,10 +15,11 @@ use softbuffer::{Context, Rect, Surface};
 use token_cafe::assets::{H, W};
 use token_cafe::scene::Scene;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
+#[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::window::{Fullscreen, Window, WindowId};
 
@@ -49,7 +50,7 @@ impl Area {
 /// The pixels that differ between two frames, or None.
 fn diff(a: &[u32], b: &[u32]) -> Option<Area> {
     let mut area: Option<Area> = None;
-    for (y, (ra, rb)) in a.chunks_exact(W).zip(b.chunks_exact(W)).enumerate() {
+    for (y, (ra, rb)) in a.as_chunks::<W>().0.iter().zip(b.as_chunks::<W>().0.iter()).enumerate() {
         let Some(x0) = ra.iter().zip(rb).position(|(p, q)| p != q) else { continue };
         let x1 = W - ra.iter().zip(rb).rev().position(|(p, q)| p != q).unwrap();
         let row = Area { x0, y0: y, x1, y1: y + 1 };
@@ -238,7 +239,7 @@ impl App {
             Key::Named(NamedKey::Escape) => s.window.set_fullscreen(None),
             Key::Character(c) => {
                 if let Some(k) = c.parse::<u32>().ok().filter(|k| (1..=6).contains(k)) {
-                    let _ = s.window.request_inner_size(PhysicalSize::new(W as u32 * k, H as u32 * k));
+                    let _ = s.window.request_inner_size(LogicalSize::new(W as u32 * k, H as u32 * k));
                 }
             }
             _ => {}
@@ -256,6 +257,7 @@ impl ApplicationHandler for App {
             .with_inner_size(LogicalSize::new(W as u32 * self.scale, H as u32 * self.scale))
             .with_min_inner_size(LogicalSize::new(W as u32, H as u32));
         // app_id (Wayland) / WM_CLASS (X11) "token-cafe", for window rules
+        #[cfg(target_os = "linux")]
         let attrs = WindowAttributesExtWayland::with_name(attrs, "token-cafe", "token-cafe");
         let made = el.create_window(attrs).map_err(|e| e.to_string()).and_then(|window| {
             let window = Rc::new(window);

@@ -9,7 +9,7 @@ They type while they work, nap while you're away, and raise a hand when they nee
 
 ![Rust](https://img.shields.io/badge/Rust-2024-dea584?logo=rust&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-supported-3fb950?logo=linux&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS-help_wanted-8b949e?logo=apple&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-supported-3fb950?logo=apple&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-help_wanted-8b949e?logo=windows&logoColor=white)
 
 <img src="docs/cafe.png" alt="The café at night: eight desks, patrons typing, thinking, sleeping and raising their hands, and a message window saying CHECKOUT-1C needs your OK" width="720">
@@ -17,7 +17,7 @@ They type while they work, nap while you're away, and raise a hand when they nee
 </div>
 
 > [!TIP]
-> **macOS and Windows contributors welcome!** Token Café runs on Linux today. The window, the renderer and the usage counter are already cross-platform; what's missing is finding the agent sessions on your OS. [Here's what it takes.](#-macos-and-windows-contributors-welcome)
+> **Linux and macOS supported.** Windows contributors are welcome; see [porting notes](#windows-porting-notes).
 
 ## What you're looking at
 
@@ -44,12 +44,21 @@ Up on the wall, **the tab** keeps a running total for the calendar month: tokens
 
 ## Getting started
 
-You need [Rust](https://rustup.rs) 1.88 or newer and a C compiler (SQLite is built in), on a Wayland or X11 desktop. From a clone of this repository:
+You need [Rust](https://rustup.rs) 1.88 or newer and a C compiler (SQLite is built in), on macOS or a Linux Wayland/X11 desktop. On macOS, install Apple’s Command Line Tools (`xcode-select --install`) for the C compiler. From a clone of this repository:
 
 ```sh
 cargo build --release
 ./target/release/token-cafe
 ```
+
+On macOS you can also build a local app bundle to launch from Finder or keep in the Dock:
+
+```sh
+./tools/build_macos.sh
+open "target/release/Token Café.app"
+```
+
+The bundle is for local use; it is not signed for distribution or notarized. Finder launches use the default agent directories; use the terminal command when you need shell environment overrides.
 
 | Command | |
 |---|---|
@@ -79,9 +88,11 @@ Everything is read locally; nothing leaves your machine. Token Café only reads 
 | **Claude Code** sessions | `~/.claude/sessions/<pid>.json`: one per interactive session, with its status and what it's waiting for. A session counts while its process is alive |
 | **Codex** sessions | running `codex` processes → the rollout log each one has open (or its newest thread in `~/.codex/state_5.sqlite`) → whether the last task started or finished |
 | **The tab** | every transcript under `~/.claude/projects/` and `~/.codex/sessions/` written this month; each API response carries its token counts |
-| **Cache** | `~/.cache/token-cafe/usage.json`, so only changed transcripts are read again |
+| **Cache** | `~/Library/Caches/token-cafe/usage.json` on macOS; `~/.cache/token-cafe/usage.json` on Linux. `XDG_CACHE_HOME` overrides either default |
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured. Codex doesn't log its approval prompts, so Codex patrons never raise a hand.
+
+On macOS, native `libproc` and `sysctl` calls discover processes, working directories, arguments and open rollout files. Claude session identity is checked against its macOS process-start date, with `startedAt` as a fallback for older files. Processes macOS does not allow us to inspect are skipped. Codex detection covers interactive CLI sessions; desktop app-server sessions are not collected.
 
 ## Under the hood
 
@@ -90,7 +101,7 @@ design/cafe.js          the art and the scene's behaviour, as pixel strings and 
 tools/gen_assets.mjs    turns it into src/assets.rs and src/bg.rgb
 src/scene.rs            the café: seats, walking, poses, particles, message window, the tab
 src/gfx.rs              rectangles, shadows, palette sprites, a 5×7 font
-src/collect/            which sessions are live (procfs.rs is the only Linux-specific file)
+src/collect/            which sessions are live (procfs.rs for Linux, macos.rs for macOS)
 src/usage.rs            this month's tokens and list-price dollars
 src/app.rs              the window: winit + softbuffer, whole-number scaling, damage tracking
 examples/screenshots.rs renders the images in this README
@@ -103,18 +114,11 @@ node tools/gen_assets.mjs                          # regenerate the sprites and 
 cargo run --release --example screenshots          # refresh docs/*.png and docs/arrivals.gif
 ```
 
-## 🍎🪟 macOS and Windows contributors welcome
+## Windows porting notes
 
-The café itself already runs anywhere: the renderer is plain Rust, and the window uses [winit](https://github.com/rust-windowing/winit) and [softbuffer](https://github.com/rust-windowing/softbuffer). What's Linux-only is how the live sessions are found, plus a few small assumptions. If you're on a Mac or a Windows machine, here's the list:
+The renderer and window dependencies are cross-platform, but Windows process discovery is not implemented. A Windows backend needs executable paths (`codex.exe`), arguments, working directories, process start times and open rollout files (or the existing SQLite fallback). It also needs native home/cache paths and validation of Claude's process identity format.
 
-- [ ] **Make it compile.** `src/app.rs` uses `WindowAttributesExtWayland` to set the app id; that needs a `cfg` gate for non-Linux targets.
-- [ ] **Process information.** `src/collect/procfs.rs` reads `/proc` for a process's start time, executable, arguments, working directory and open files. A macOS (`libproc`) or Windows version, or a switch to the [`sysinfo`](https://crates.io/crates/sysinfo) crate, would cover most of it.
-- [ ] **Telling live Claude sessions from stale ones.** Session files carry a `procStart` that is Linux clock ticks; on other systems, check what Claude Code writes there, or compare the process's start time with the file's `startedAt`.
-- [ ] **Finding each Codex session's log.** On Linux it's the rollout file the process has open. Without that, the existing fallback (the newest thread for the process's working directory in `state_5.sqlite`) may already be enough. The executable is `codex.exe` on Windows.
-- [ ] **Paths.** `$HOME` and `$XDG_CACHE_HOME` are used directly; Windows wants `%USERPROFILE%` and a proper cache directory (the [`dirs`](https://crates.io/crates/dirs) crate).
-- [ ] **Check the session files exist where expected.** `~/.claude/sessions/`, `~/.codex/sessions/` and `~/.codex/state_5.sqlite` have only been seen on Linux so far.
-
-`token-cafe --print` is the quickest way to see what the collector finds on your machine, and `--demo` to see the window without any agents. Pull requests and issues with what you find are very welcome, even partial ones.
+`token-cafe --print` checks live collection without opening a window; `--demo` shows the café without any running agents.
 
 ## Credits
 

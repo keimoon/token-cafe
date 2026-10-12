@@ -55,7 +55,9 @@ fn gif(path: &str, frames: &[Vec<u8>], k: usize, delay_cs: u16) {
     let indexed: Vec<Vec<u8>> = frames
         .iter()
         .map(|f| {
-            f.chunks_exact(3)
+            f.as_chunks::<3>()
+                .0
+                .iter()
                 .map(|c| {
                     let key = [c[0], c[1], c[2]];
                     *index.entry(key).or_insert_with(|| {

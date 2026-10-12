@@ -6,17 +6,9 @@ use std::fs;
 
 use serde_json::Value;
 
-use super::{Found, basename, procfs, truthy};
+use super::{Found, basename, process, truthy};
 use crate::scene::{Kind, State, Why};
 use crate::usage::claude_dir;
-
-/// procStart as text (Claude Code writes clock ticks since boot as a string).
-fn plain(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
 
 fn millis(d: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter().find_map(|k| d.get(*k).filter(|v| truthy(v)).and_then(Value::as_f64))
@@ -40,11 +32,9 @@ pub fn sessions(now: f64) -> Vec<Found> {
             _ => continue,
         }
         let Some(pid) = d.get("pid").filter(|p| truthy(p)).and_then(Value::as_u64) else { continue };
-        let Some(ticks) = procfs::start_ticks(pid as u32) else { continue }; // dead
-        if let Some(ps) = d.get("procStart").filter(|p| truthy(p))
-            && plain(ps) != ticks
-        {
-            continue; // the pid was reused
+        let Ok(pid) = u32::try_from(pid) else { continue };
+        if !process::matches_session(pid, &d) {
+            continue; // dead process or a reused pid
         }
         let status = d.get("status").and_then(Value::as_str);
         let state = match status {

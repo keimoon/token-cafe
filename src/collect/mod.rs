@@ -3,7 +3,12 @@
 
 mod claude;
 mod codex;
-mod procfs;
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod process;
+#[cfg(not(target_os = "macos"))]
+#[path = "procfs.rs"]
+mod process;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

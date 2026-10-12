@@ -359,7 +359,8 @@ impl Default for Scene {
 
 impl Scene {
     pub fn new() -> Self {
-        let bg = a::BG.chunks_exact(3).map(|p| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
+        let bg =
+            a::BG.as_chunks::<3>().0.iter().map(|p| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
         Scene {
             t: 0,
             agents: Vec::new(),

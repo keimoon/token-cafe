@@ -58,3 +58,13 @@ pub fn open_files(pid: u32) -> Vec<PathBuf> {
     let Ok(rd) = fs::read_dir(format!("/proc/{pid}/fd")) else { return Vec::new() };
     rd.flatten().filter_map(|e| fs::read_link(e.path()).ok()).collect()
 }
+
+/// Keep Linux's exact clock-tick identity check.
+pub fn matches_session(pid: u32, session: &serde_json::Value) -> bool {
+    let Some(ticks) = start_ticks(pid) else { return false };
+    match session.get("procStart").filter(|v| super::truthy(v)) {
+        None => true,
+        Some(serde_json::Value::String(s)) => *s == ticks,
+        Some(other) => other.to_string() == ticks,
+    }
+}
