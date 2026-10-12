@@ -21,7 +21,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 #[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
 use crate::Update;
 
@@ -107,9 +107,16 @@ struct Shown {
     surface: Surface<Rc<Window>, Rc<Window>>,
 }
 
+fn supports_pinning(display: winit::raw_window_handle::RawDisplayHandle) -> bool {
+    use winit::raw_window_handle::RawDisplayHandle;
+    matches!(display, RawDisplayHandle::AppKit(_) | RawDisplayHandle::Xlib(_) | RawDisplayHandle::Xcb(_))
+}
+
 struct App {
     rx: Receiver<Update>,
     scale: u32,
+    always_on_top: bool,
+    pinning_supported: bool,
     shown: Option<Shown>,
     scene: Scene,
     fb: Vec<u32>,
@@ -125,12 +132,19 @@ struct App {
     occluded: bool,
 }
 
-pub fn run(rx: Receiver<Update>, scale: u32) -> Result<(), Box<dyn Error>> {
+pub fn run(rx: Receiver<Update>, scale: u32, always_on_top: bool) -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
+    use winit::raw_window_handle::HasDisplayHandle;
+    let pinning_supported = event_loop.display_handle().is_ok_and(|handle| supports_pinning(handle.as_raw()));
+    if always_on_top && !pinning_supported {
+        eprintln!("token-cafe: pinning is unavailable on this window backend; use a compositor window rule");
+    }
     let now = Instant::now();
     let mut app = App {
         rx,
         scale,
+        always_on_top: always_on_top && pinning_supported,
+        pinning_supported,
         shown: None,
         scene: Scene::new(),
         fb: vec![0; W * H],
@@ -148,6 +162,20 @@ pub fn run(rx: Receiver<Update>, scale: u32) -> Result<(), Box<dyn Error>> {
 }
 
 impl App {
+    fn window_level(&self) -> WindowLevel {
+        if self.always_on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal }
+    }
+
+    fn window_title(&self) -> &'static str {
+        if !self.pinning_supported {
+            "Token Café — Pin via compositor"
+        } else if self.always_on_top {
+            "Token Café — Pinned (T)"
+        } else {
+            "Token Café — Pin: T"
+        }
+    }
+
     /// Apply what the feeders sent, advance the scene and render it.
     fn step(&mut self) {
         while let Ok(u) = self.rx.try_recv() {
@@ -232,6 +260,11 @@ impl App {
         let Some(s) = &self.shown else { return };
         match key.as_ref() {
             Key::Character("q") => el.exit(),
+            Key::Character("t" | "T") if self.pinning_supported => {
+                self.always_on_top = !self.always_on_top;
+                s.window.set_window_level(self.window_level());
+                s.window.set_title(self.window_title());
+            }
             Key::Character("f") | Key::Named(NamedKey::F11) => {
                 let full = if s.window.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) };
                 s.window.set_fullscreen(full);
@@ -253,7 +286,8 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Token Café")
+            .with_title(self.window_title())
+            .with_window_level(self.window_level())
             .with_inner_size(LogicalSize::new(W as u32 * self.scale, H as u32 * self.scale))
             .with_min_inner_size(LogicalSize::new(W as u32, H as u32));
         // app_id (Wayland) / WM_CLASS (X11) "token-cafe", for window rules
@@ -319,6 +353,17 @@ mod tests {
 
     fn frame() -> Vec<u32> {
         (0..W * H).map(|i| (i * 7 + i / W) as u32 & 0xffff).collect()
+    }
+
+    #[test]
+    fn pinning_support_matches_native_backends() {
+        use winit::raw_window_handle::{
+            AppKitDisplayHandle, RawDisplayHandle, WaylandDisplayHandle, XcbDisplayHandle, XlibDisplayHandle,
+        };
+        assert!(supports_pinning(RawDisplayHandle::AppKit(AppKitDisplayHandle::new())));
+        assert!(supports_pinning(RawDisplayHandle::Xlib(XlibDisplayHandle::new(None, 0))));
+        assert!(supports_pinning(RawDisplayHandle::Xcb(XcbDisplayHandle::new(None, 0))));
+        assert!(!supports_pinning(RawDisplayHandle::Wayland(WaylandDisplayHandle::new(std::ptr::NonNull::dangling()))));
     }
 
     #[test]

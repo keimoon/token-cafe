@@ -4,7 +4,7 @@ A Rust desktop app that shows the Claude Code and Codex sessions on this machine
 
 ## Commands
 
-- `cargo build --release`, then `target/release/token-cafe` (live), `--demo` (fixed list showing every pose), `--print` (sessions and month total as text), `--scale N` (initial size, default 3x). Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, q quit.
+- `cargo build --release`, then `target/release/token-cafe` (live), `--demo` (fixed list showing every pose), `--print` (sessions and month total as text), `--scale N` (initial size, default 3x). Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, t toggle always on top, q quit. `--always-on-top` starts pinned; combine with `--scale 1` for a small floating café.
 - `cargo test`, `cargo clippy --all-targets` (kept warning-free), `cargo fmt` (`rustfmt.toml`: width 120).
 - After editing `design/cafe.js`: `node tools/gen_assets.mjs`, then `cargo run --release --example screenshots` to refresh the README images in `docs/`.
 

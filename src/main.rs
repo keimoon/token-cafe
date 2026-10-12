@@ -7,7 +7,8 @@
 //!   token-cafe --demo       a fixed list that shows every pose
 //!   token-cafe --print      print the sessions and this month's usage, and exit
 //!   token-cafe --scale N    start at N times 320x240 (default 3)
-//! Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, q quit.
+//!   token-cafe --always-on-top  keep the café above other windows
+//! Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, t toggle always on top, q quit.
 
 mod app;
 
@@ -132,18 +133,21 @@ fn print_once() {
 }
 
 fn usage_text() -> &'static str {
-    "usage: token-cafe [--demo | --print] [--scale N]\n\
+    "usage: token-cafe [--demo | --print] [--scale N] [--always-on-top]\n\
      \n  --demo     a fixed list that shows every pose\
      \n  --print    print the sessions and this month's usage, and exit\
      \n  --scale N  start at N times 320x240 (default 3)\
-     \n\nkeys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, q quit"
+     \n  --always-on-top  keep the café above other windows\
+     \n\nkeys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, t toggle always on top, q quit"
 }
 
 fn main() {
     let (mut demo, mut print, mut scale) = (false, false, 3u32);
+    let mut always_on_top = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--always-on-top" => always_on_top = true,
             "--demo" => demo = true,
             "--print" => print = true,
             "--scale" => match args.next().and_then(|v| v.parse().ok()).filter(|&k| (1..=16).contains(&k)) {
@@ -165,7 +169,7 @@ fn main() {
         thread::spawn(move || sessions_feed(tx));
         thread::spawn(move || usage_feed(tx2));
     }
-    if let Err(e) = app::run(rx, scale) {
+    if let Err(e) = app::run(rx, scale, always_on_top) {
         eprintln!("token-cafe: {e}");
         std::process::exit(1);
     }

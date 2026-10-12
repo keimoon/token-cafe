@@ -84,3 +84,9 @@ impl Drop for TestDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+// Compile the portable Linux identity regression tests on macOS too.
+#[cfg(all(test, target_os = "macos"))]
+#[allow(dead_code)]
+#[path = "procfs.rs"]
+mod linux_identity_tests;

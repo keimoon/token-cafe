@@ -65,6 +65,7 @@ The bundle is for local use; it is not signed for distribution or notarized. Fin
 | `token-cafe` | the live café |
 | `token-cafe --demo` | a full house showing every pose, no agents needed |
 | `token-cafe --print` | list the live sessions and this month's usage in the terminal, then exit |
+| `token-cafe --always-on-top` | keep the café above other windows |
 | `token-cafe --scale N` | open at N × 320×240 (default 3) |
 
 | Key | |
@@ -72,7 +73,12 @@ The bundle is for local use; it is not signed for distribution or notarized. Fin
 | `1` – `6` | resize the window to that many times 320×240 |
 | `f` / `F11` | fullscreen (nice on a spare monitor) |
 | `Esc` | leave fullscreen |
+| `t` | toggle always on top (the title shows whether it is pinned) |
 | `q` | quit |
+
+On macOS, press `1` then `t` for a small floating café, or launch with `token-cafe --scale 1 --always-on-top`. It stays above ordinary windows when you switch apps in the same desktop Space. Press `t` again to unpin. The mode lasts until you quit; use the launch flag to start pinned.
+
+On Linux X11, pinning depends on window-manager support. Wayland does not expose the window-level API: the title shows “Pin via compositor”, `T` leaves the window unpinned, and `--always-on-top` prints an explanation. Configure a compositor window rule using the `token-cafe` app ID instead.
 
 The café is drawn at 320×240 and scaled by the largest whole number that fits, so the pixels stay crisp at any window size; the rest is letterboxed. Only what changes on screen is repainted, so a live café costs about 1% of a CPU core.
 

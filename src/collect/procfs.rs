@@ -62,9 +62,33 @@ pub fn open_files(pid: u32) -> Vec<PathBuf> {
 /// Keep Linux's exact clock-tick identity check.
 pub fn matches_session(pid: u32, session: &serde_json::Value) -> bool {
     let Some(ticks) = start_ticks(pid) else { return false };
+    matches_ticks(&ticks, session)
+}
+
+fn matches_ticks(ticks: &str, session: &serde_json::Value) -> bool {
     match session.get("procStart").filter(|v| super::truthy(v)) {
         None => true,
         Some(serde_json::Value::String(s)) => *s == ticks,
-        Some(other) => other.to_string() == ticks,
+        Some(other) => {
+            other.as_u64().zip(ticks.parse::<u64>().ok()).is_some_and(|(recorded, actual)| recorded == actual)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn start_ticks_accept_strings_and_numbers_without_coercing_other_values() {
+        assert!(matches_ticks("12345", &json!({"procStart": "12345"})));
+        assert!(matches_ticks("12345", &json!({"procStart": 12345})));
+        assert!(matches_ticks("12345", &json!({})));
+        assert!(!matches_ticks("12345", &json!({"procStart": 12346})));
+        assert!(!matches_ticks("12345", &json!({"procStart": "12346"})));
+        for value in [json!(true), json!(-12345), json!(12345.0), json!([12345])] {
+            assert!(!matches_ticks("12345", &json!({"procStart": value})));
+        }
     }
 }
