@@ -4,7 +4,7 @@
 
 **Your AI coding agents, as regulars at a pixel-art night café.**
 
-Every Claude Code and Codex session running on your machine takes a seat.
+Claude Code and Codex sessions running on your machine take a seat, including local sessions in their macOS desktop apps.
 They type while they work, nap while you're away, and raise a hand when they need you.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-dea584?logo=rust&logoColor=white)
@@ -85,14 +85,18 @@ Everything is read locally; nothing leaves your machine. Token Café only reads 
 
 | | Where it looks |
 |---|---|
-| **Claude Code** sessions | `~/.claude/sessions/<pid>.json`: one per interactive session, with its status and what it's waiting for. A session counts while its process is alive |
-| **Codex** sessions | running `codex` processes → the rollout log each one has open (or its newest thread in `~/.codex/state_5.sqlite`) → whether the last task started or finished |
+| **Claude Code** sessions | `~/.claude/sessions/<pid>.json`: live CLI and desktop Code-tab sessions, with status and what they are waiting for. On macOS, desktop records in `~/Library/Application Support/Claude/claude-code-sessions/` supply chat titles and archive status |
+| **Codex** sessions | running CLI and desktop `app-server` processes → their open rollout logs → whether each chat’s last task started or finished. Desktop chats get separate patrons, titled from `~/.codex/state_5.sqlite`; CLI sessions can also use its cwd fallback |
 | **The tab** | every transcript under `~/.claude/projects/` and `~/.codex/sessions/` written this month; each API response carries its token counts |
 | **Cache** | `~/Library/Caches/token-cafe/usage.json` on macOS; `~/.cache/token-cafe/usage.json` on Linux. `XDG_CACHE_HOME` overrides either default |
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured. Codex doesn't log its approval prompts, so Codex patrons never raise a hand.
 
-On macOS, native `libproc` and `sysctl` calls discover processes, working directories, arguments and open rollout files. Claude session identity is checked against its macOS process-start date, with `startedAt` as a fallback for older files. Processes macOS does not allow us to inspect are skipped. Codex detection covers interactive CLI sessions; desktop app-server sessions are not collected.
+On macOS, native `libproc` and `sysctl` calls discover processes, working directories, arguments and open rollout files. Claude session identity is checked against its macOS process-start date, with `startedAt` as a fallback for older files. Processes macOS does not allow us to inspect are skipped.
+
+Desktop discovery is automatic: launch Token Café without `--demo`. Codex gets one patron per loaded root chat with an open rollout log; helper processes, archived chats and subagent-only logs are excluded. CLI and desktop references to the same chat are deduplicated. Closing a chat removes its patron when the server releases the log; the desktop app can keep idle chats loaded in the background. Saved sidebar history alone does not count as a live session.
+
+Claude desktop support covers the **Code tab's local Claude Code sessions**, preserving busy, idle and permission/question states. Ordinary Claude Chat, Cowork VM sessions, and cloud-only chats are not detected. Desktop titles/archive metadata refresh every five seconds; live status still refreshes every second. These local desktop formats can change between app versions.
 
 ## Under the hood
 

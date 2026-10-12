@@ -30,6 +30,7 @@ struct Found {
 
 #[derive(Default)]
 pub struct Collector {
+    claude: claude::Claude,
     codex: codex::Codex,
 }
 
@@ -41,7 +42,7 @@ impl Collector {
     /// Every live session, first come first seated.
     pub fn sessions(&mut self) -> Vec<Session> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-        let mut all = claude::sessions(now);
+        let mut all = self.claude.sessions(now);
         all.extend(self.codex.sessions(now));
         all.sort_by(|a, b| a.started.total_cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
         all.into_iter()
@@ -61,4 +62,25 @@ impl Collector {
 /// The last path component ('' after a trailing '/').
 fn basename(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
+}
+
+#[cfg(test)]
+struct TestDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("token-cafe-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
