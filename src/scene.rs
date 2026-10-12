@@ -3,6 +3,7 @@
 //! collector only says which sessions exist and what state each is in;
 //! everything that moves is decided here.
 
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use chrono::{NaiveTime, Timelike};
@@ -11,7 +12,7 @@ use crate::assets::{self as a, Pal, Sprite, base, c, slot};
 use crate::gfx::{Gfx, text_width};
 
 pub const SEATS: usize = 8;
-const NAME_LEN: usize = 12; // shown in the message window
+const TASK_LINE_LEN: usize = 19; // between the portrait and scrollbar touch target
 const PLATE_LEN: usize = 8; // shown on the desk nameplate
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,6 +58,35 @@ pub struct Session {
     /// How long the session has been in this state, so a restarted app
     /// still knows who has been idle long enough to doze off.
     pub age_s: u32,
+}
+
+/// Only sessions associated with a desktop app receive a navigation target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionTarget {
+    Claude(String),
+    Codex(String),
+}
+
+impl SessionTarget {
+    pub fn url(&self) -> Option<String> {
+        let (id, prefix) = match self {
+            Self::Claude(id) => (id.strip_prefix("local_")?, "claude://code/continue?session=local_"),
+            Self::Codex(id) => (id.as_str(), "codex://threads/"),
+        };
+        // Session IDs are data, never arbitrary URLs or shell arguments.
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+            return None;
+        }
+        Some(format!("{prefix}{id}"))
+    }
+}
+
+/// Short, evidence-backed display fields, separate from the animated session state.
+#[derive(Clone, Debug)]
+pub struct SessionDetail {
+    pub target: Option<SessionTarget>,
+    pub id: String,
+    pub task: String,
 }
 
 /// This month's totals for the tab on the wall, Claude and Codex summed.
@@ -190,6 +220,12 @@ pub struct Scene {
     /// No list yet: the first one seats everyone at once.
     first: bool,
     usage: Option<Usage>,
+    sessions: Vec<Session>,
+    details: Vec<SessionDetail>,
+    pages: HashMap<String, Vec<String>>,
+    unavailable: [String; 1],
+    selected: Option<String>,
+    task_page: usize,
     bg: Box<[u32]>,
 }
 
@@ -357,6 +393,41 @@ impl Default for Scene {
     }
 }
 
+fn ellipsize(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        text.to_owned()
+    } else {
+        format!("{}...", text.chars().take(width.saturating_sub(3)).collect::<String>())
+    }
+}
+
+/// Word-wrap in character cells; never scroll or cut a multi-byte UTF-8 character.
+fn task_pages(text: &str) -> Vec<String> {
+    let mut pages = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > TASK_LINE_LEN {
+            pages.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        for c in word.chars() {
+            if line.chars().count() == TASK_LINE_LEN {
+                pages.push(std::mem::take(&mut line));
+            }
+            line.push(c);
+        }
+    }
+    if !line.is_empty() {
+        pages.push(line);
+    }
+    if pages.is_empty() {
+        pages.push("TASK UNAVAILABLE".into());
+    }
+    pages.chunks(2).map(|lines| lines.join("\n")).collect()
+}
+
 impl Scene {
     pub fn new() -> Self {
         let bg =
@@ -370,6 +441,12 @@ impl Scene {
             overflow: 0,
             first: true,
             usage: None,
+            sessions: Vec::new(),
+            details: Vec::new(),
+            pages: HashMap::new(),
+            unavailable: ["TASK UNAVAILABLE".into()],
+            selected: None,
+            task_page: 0,
             bg,
         }
     }
@@ -382,6 +459,10 @@ impl Scene {
     /// seats everyone at once; later newcomers walk in and leavers walk out.
     /// Whoever finds no free seat waits outside.
     pub fn set_sessions(&mut self, list: &[Session]) {
+        self.sessions = list.to_vec();
+        if self.selected.as_ref().is_some_and(|id| !list.iter().any(|s| &s.id == id)) {
+            self.clear_selection();
+        }
         let instant = std::mem::replace(&mut self.first, false);
         for a in &mut self.agents {
             a.seen = false;
@@ -455,6 +536,127 @@ impl Scene {
             a.start_walk(&back, Mode::Leaving);
         }
         self.overflow = overflow;
+    }
+
+    pub fn set_details(&mut self, details: Vec<SessionDetail>) {
+        let old = self.details.iter().find(|d| Some(&d.id) == self.selected.as_ref()).map(|d| &d.task);
+        let new = details.iter().find(|d| Some(&d.id) == self.selected.as_ref()).map(|d| &d.task);
+        if old != new {
+            self.task_page = 0;
+        }
+        self.pages.retain(|id, _| details.iter().any(|d| &d.id == id));
+        for detail in &details {
+            if !self.details.iter().any(|old| old.id == detail.id && old.task == detail.task) {
+                self.pages.insert(detail.id.clone(), task_pages(&detail.task));
+            }
+        }
+        self.details = details;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+        self.task_page = 0;
+    }
+
+    pub fn select_next(&mut self) {
+        self.select_patron(true);
+    }
+
+    pub fn select_patron(&mut self, forward: bool) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let next = self
+            .sessions
+            .iter()
+            .position(|s| Some(&s.id) == self.selected.as_ref())
+            .map_or(if forward { 0 } else { self.sessions.len() - 1 }, |i| {
+                (i + if forward { 1 } else { self.sessions.len() - 1 }) % self.sessions.len()
+            });
+        self.selected = Some(self.sessions[next].id.clone());
+        self.task_page = 0;
+    }
+
+    /// Arrow navigation opens focus first and stops at document boundaries.
+    pub fn page_task_key(&mut self, forward: bool) {
+        if self.selected.is_none() {
+            self.select_next();
+            return;
+        }
+        let last = self.selected_task_pages().len() - 1;
+        self.task_page = if forward {
+            self.task_page.saturating_add(1).min(last)
+        } else {
+            self.task_page.saturating_sub(1).min(last)
+        };
+    }
+
+    pub fn page_task(&mut self, forward: bool) {
+        let n = self.selected_task_pages().len();
+        self.task_page = if forward { (self.task_page + 1) % n } else { (self.task_page + n - 1) % n };
+    }
+
+    fn selected_task_pages(&self) -> &[String] {
+        self.selected.as_ref().and_then(|id| self.pages.get(id)).map_or(&self.unavailable, Vec::as_slice)
+    }
+
+    pub fn scrollbar_hit(&self, x: i32, y: i32) -> bool {
+        self.selected.is_some() && x >= 276 && y >= a::WIN_Y
+    }
+
+    pub fn scroll_task_to(&mut self, y: i32) {
+        let n = self.selected_task_pages().len();
+        let thumb_h = (36 / n as i32).max(8);
+        let travel = 36 - thumb_h;
+        if travel > 0 {
+            let position = (y - a::WIN_Y - 6 - thumb_h / 2).clamp(0, travel);
+            self.task_page = ((position * (n - 1) as i32 + travel / 2) / travel) as usize;
+        }
+    }
+
+    pub fn patron_at(&self, x: i32, y: i32) -> Option<&str> {
+        if !(0..320).contains(&x) || !(FLOOR_Y..a::WIN_Y).contains(&y) {
+            return None;
+        }
+        let seat = ((y - FLOOR_Y) / STATION_H * COLS + x / STATION_W) as usize;
+        self.agents.iter().find(|ag| ag.seat == seat && ag.seen && ag.mode != Mode::Leaving).map(|ag| ag.id.as_str())
+    }
+
+    pub fn session_target(&self, id: &str) -> Option<&SessionTarget> {
+        self.details.iter().find(|d| d.id == id).and_then(|d| d.target.as_ref())
+    }
+
+    pub fn focus_patron(&mut self, id: String) {
+        if self.selected.as_ref() != Some(&id) {
+            self.task_page = 0;
+        }
+        self.selected = Some(id);
+    }
+
+    /// Coordinates are in the original 320x240 frame, after removing letterboxing.
+    pub fn click(&mut self, x: i32, y: i32) {
+        if y >= a::WIN_Y {
+            if self.selected.is_none() || x < 276 {
+                self.select_next();
+            } else {
+                self.scroll_task_to(y);
+            }
+            return;
+        }
+        if y < FLOOR_Y {
+            return;
+        }
+        let seat = ((y - FLOOR_Y) / STATION_H * COLS + x / STATION_W) as usize;
+        if let Some(ag) = self.agents.iter().find(|ag| ag.seat == seat && ag.seen && ag.mode != Mode::Leaving) {
+            if self.selected.as_ref() == Some(&ag.id) {
+                self.clear_selection();
+            } else {
+                self.selected = Some(ag.id.clone());
+                self.task_page = 0;
+            }
+        } else {
+            self.clear_selection();
+        }
     }
 
     pub fn set_usage(&mut self, usage: Usage) {
@@ -785,7 +987,11 @@ impl Scene {
     fn draw_overlays(&self, g: &mut Gfx) {
         let t = self.t;
         let wl = self.waiting_list();
-        let focused = wl.get(self.focus).copied();
+        let focused = if let Some(id) = &self.selected {
+            self.agents.iter().position(|ag| &ag.id == id && ag.seen)
+        } else {
+            wl.get(self.focus).copied()
+        };
         for (k, ag) in self.agents.iter().enumerate() {
             if ag.mode != Mode::Seated {
                 continue;
@@ -826,26 +1032,38 @@ impl Scene {
         }
     }
 
+    /// Shared portrait and text layout for automatic alerts and manual focus.
+    fn draw_dialogue(&self, g: &mut Gfx, id: &str, state: State, title: &str, text: &str) {
+        let (fx, fy, fs) = (8, a::WIN_Y + 7, 34);
+        let agent = self.agents.iter().find(|ag| ag.id == id && ag.seen);
+        let look = look_for(id);
+        let pal = agent.map_or(&look.pal, |ag| &ag.pal);
+        let chair = agent.map_or(0, |ag| ag.seat % a::CHAIRS.len());
+        g.rect(fx, fy, fs, fs, c::WIN_BORDER_LO);
+        g.rect(fx + 1, fy + 1, fs - 2, fs - 2, c::WIN1);
+        g.rect(fx + 1, fy + 19, fs - 2, fs - 20, a::CHAIRS[chair][0]);
+        let head = match state {
+            State::Wait => &a::HEAD_SHOUT,
+            State::Idle => &a::HEAD_CLOSED,
+            State::Work => &a::HEAD_OPEN,
+        };
+        g.blit_scaled(head, fx + 3, fy + 5, Some(pal), 2, Some([fx + 1, fy + 1, fx + fs - 1, fy + fs - 1]));
+        g.text(&ellipsize(title, 40), 50, a::WIN_Y + 4, c::GOLD, 1, Some(c::TEXT_SHADOW));
+        for (row, line) in text.lines().take(2).enumerate() {
+            g.text(line, 50, a::WIN_Y + 14 + row as i32 * 16, c::TEXT, 2, Some(c::TEXT_SHADOW));
+        }
+    }
+
     /// The message window: whoever waits for the human (portrait, name and
     /// what they want, cycling through them), else the party status.
     fn draw_message(&self, g: &mut Gfx, now: NaiveTime) {
         let t = self.t;
         let (x, y, w, h) = (0, a::WIN_Y, a::W as i32, a::H as i32 - a::WIN_Y);
         let wl = self.waiting_list();
-        if let Some(&k) = wl.get(self.focus) {
+        if let Some(&k) = wl.get(self.focus).filter(|_| self.selected.is_none()) {
             let ag = &self.agents[k];
-            // portrait: the agent's head at 2x in an inset frame
-            let (fx, fy, fs) = (x + 8, y + 7, 34);
-            g.rect(fx, fy, fs, fs, c::WIN_BORDER_LO);
-            g.rect(fx + 1, fy + 1, fs - 2, fs - 2, c::WIN1);
-            g.rect(fx + 1, fy + 1 + 18, fs - 2, fs - 20, a::CHAIRS[ag.seat % a::CHAIRS.len()][0]);
-            let bx = [fx + 1, fy + 1, fx + fs - 1, fy + fs - 1];
-            g.blit_scaled(&a::HEAD_SHOUT, fx + 3, fy + 5, Some(&ag.pal), 2, Some(bx));
-            let tx = fx + fs + 8;
-            let name = shorten(&ag.name, NAME_LEN).to_ascii_uppercase();
-            g.text(&name, tx, y + 9, c::GOLD, 2, Some(c::TEXT_SHADOW));
             let says = if ag.why == Why::Ask { "HAS A QUESTION" } else { "NEEDS YOUR OK!" };
-            g.text(says, tx, y + 27, c::TEXT, 2, Some(c::TEXT_SHADOW));
+            self.draw_dialogue(g, &ag.id, ag.state, &ellipsize(&ag.name, 33), says);
             if wl.len() > 1 {
                 let n = format!("{}/{}", self.focus + 1, wl.len());
                 g.text(&n, x + w - 10 - text_width(&n, 1), y + 9, c::TEXT_DIM, 1, Some(c::TEXT_SHADOW));
@@ -856,6 +1074,38 @@ impl Scene {
                     g.rect(ax + j, ay + j, 7 - 2 * j, 1, c::TEXT);
                 }
             }
+            return;
+        }
+        if let Some(session) = self.sessions.iter().find(|s| Some(&s.id) == self.selected.as_ref()) {
+            let pages = self.selected_task_pages();
+            let page = self.task_page % pages.len();
+            let prefix = if session.state == State::Idle { "LAST" } else { "TASK" };
+            let name = if wl.is_empty() {
+                format!("{prefix} {}", session.name)
+            } else {
+                format!("!{} WAIT {prefix} {}", wl.len(), session.name)
+            };
+            self.draw_dialogue(g, &session.id, session.state, &name, &pages[page]);
+            // Vertical scrollbar; the surrounding 44x48 area is its hit target.
+            let track_y = y + 6;
+            let track_h = 36;
+            let thumb_h = (track_h / pages.len() as i32).max(8);
+            let travel = track_h - thumb_h;
+            let offset = if pages.len() > 1 { travel * page as i32 / (pages.len() - 1) as i32 } else { 0 };
+            let sx = x + w - 14;
+            // Recessed blue rail tucked inside the panel's right border.
+            g.rect(sx - 1, track_y - 1, 10, track_h + 2, 0x10205b);
+            g.rect(sx, track_y, 8, track_h, 0x1a3280);
+            g.rect(sx + 8, track_y, 1, track_h, 0x687fc1);
+            g.rect(sx, track_y + track_h, 9, 1, 0x687fc1);
+            // Raised thumb with a bright upper edge and paired grip marks.
+            let ty = track_y + offset;
+            g.rect(sx, ty, 8, thumb_h, 0x536cab);
+            g.rect(sx, ty, 8, 1, 0xe0e8ff);
+            g.rect(sx, ty + 1, 1, thumb_h - 2, 0xc0cff5);
+            g.rect(sx + 1, ty + 1, 6, thumb_h - 3, 0xa1b6e8);
+            g.rect(sx + 2, ty + thumb_h / 2 - 1, 4, 1, 0x536cab);
+            g.rect(sx + 2, ty + thumb_h / 2 + 1, 4, 1, 0x536cab);
             return;
         }
         // nobody waiting: party status
@@ -879,20 +1129,13 @@ impl Scene {
         let colon = if (t / 500) % 2 != 0 { ':' } else { ' ' };
         let clock = format!("{:02}{colon}{:02}", now.hour(), now.minute());
         g.text(&clock, x + w - 12 - text_width(&clock, 2), y + 10, c::GOLD, 2, Some(c::TEXT_SHADOW));
-        let mut line = if seated == 0 {
-            "THE CAFE IS EMPTY. NO AGENTS ONLINE.".to_string()
-        } else if idle == 0 && working == 1 {
-            "ONE AGENT IS HARD AT WORK.".to_string()
-        } else if idle == 0 {
-            format!("ALL {working} AGENTS ARE HARD AT WORK.")
-        } else if working == 0 {
-            "EVERYONE IS ON A BREAK. YOUR MOVE.".to_string()
+        let line = if self.overflow > 0 {
+            format!("+{} OUTSIDE. TAP HERE FOR DETAILS", self.overflow)
+        } else if seated == 0 {
+            "THE CAFE IS EMPTY. NO AGENTS ONLINE.".into()
         } else {
-            format!("{idle} ON A BREAK, {working} AT WORK.")
+            "TAP A PATRON OR HERE FOR DETAILS".into()
         };
-        if self.overflow > 0 {
-            line = format!("+{} WAITING OUTSIDE. {line}", self.overflow);
-        }
         g.text(&line, x + 12, y + 31, c::TEXT_DIM, 1, Some(c::TEXT_SHADOW));
     }
 
@@ -936,7 +1179,229 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
-    use super::shorten;
+    use super::*;
+
+    fn session(id: &str, state: State) -> Session {
+        Session {
+            id: id.into(),
+            name: format!("Moon {id}"),
+            kind: Kind::Codex,
+            state,
+            why: Why::None,
+            pose: ForcedPose::Auto,
+            age_s: 0,
+        }
+    }
+
+    #[test]
+    fn navigation_targets_validate_ids_and_exclude_empty_seats() {
+        assert_eq!(SessionTarget::Codex("abc-123".into()).url().as_deref(), Some("codex://threads/abc-123"));
+        for id in ["", "abc?x=y", "../x", "a b"] {
+            assert!(SessionTarget::Codex(id.into()).url().is_none());
+        }
+        assert!(SessionTarget::Claude("cli-uuid".into()).url().is_none());
+        let mut scene = Scene::new();
+        scene.set_sessions(&[session("a", State::Work)]);
+        assert_eq!(scene.patron_at(40, 80), Some("a"));
+        assert_eq!(scene.patron_at(140, 80), None);
+        assert_eq!(scene.patron_at(40, 220), None);
+        scene.click(40, 80);
+        scene.focus_patron("a".into());
+        assert_eq!(scene.selected.as_deref(), Some("a"));
+        scene.click(40, 80);
+        assert!(scene.selected.is_none());
+        scene.set_sessions(&[]);
+        assert_eq!(scene.patron_at(40, 80), None);
+    }
+
+    #[test]
+    fn cached_pages_refresh_evict_and_clamp_scroll_boundaries() {
+        let mut scene = Scene::new();
+        scene.set_sessions(&[session("a", State::Work)]);
+        let details = vec![SessionDetail {
+            target: None,
+            id: "a".into(),
+            task: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen".into(),
+        }];
+        scene.set_details(details.clone());
+        scene.select_next();
+        scene.scroll_task_to(999);
+        assert_eq!(scene.task_page, scene.selected_task_pages().len() - 1);
+        let allocation = scene.pages["a"].as_ptr();
+        scene.set_details(details);
+        assert_eq!(scene.pages["a"].as_ptr(), allocation);
+        scene.scroll_task_to(-999);
+        assert_eq!(scene.task_page, 0);
+        scene.set_details(vec![SessionDetail { target: None, id: "a".into(), task: "Short".into() }]);
+        scene.scroll_task_to(999);
+        assert_eq!(scene.task_page, 0);
+        assert_eq!(scene.selected_task_pages(), ["Short"]);
+        scene.set_details(vec![]);
+        assert!(scene.pages.is_empty());
+        assert_eq!(scene.selected_task_pages(), ["TASK UNAVAILABLE"]);
+        scene.set_sessions(&[]);
+        assert!(scene.selected.is_none());
+        let mut frame = vec![0; a::W * a::H];
+        scene.render(&mut frame, NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn touch_targets_open_cycle_page_and_toggle_focus() {
+        let mut scene = Scene::new();
+        scene.set_sessions(&(0..9).map(|i| session(&i.to_string(), State::Work)).collect::<Vec<_>>());
+        scene.click(140, 220);
+        assert_eq!(scene.selected.as_deref(), Some("0"));
+        scene.click(40, 80);
+        assert!(scene.selected.is_none());
+        scene.click(40, 80);
+        assert_eq!(scene.selected.as_deref(), Some("0"));
+        scene.set_details(vec![SessionDetail {
+            target: None,
+            id: "0".into(),
+            task: "A long request that spans several pages of readable text".into(),
+        }]);
+        scene.click(290, 239);
+        assert_eq!(scene.task_page, scene.selected_task_pages().len() - 1);
+        for _ in 0..8 {
+            scene.click(140, 220);
+        }
+        assert_eq!(scene.selected.as_deref(), Some("8")); // touch can reach overflow
+        scene.click(140, 220);
+        assert_eq!(scene.selected.as_deref(), Some("0"));
+        scene.set_sessions(&[session("0", State::Work)]);
+        scene.click(280, 170);
+        assert!(scene.selected.is_none()); // empty desk clears
+    }
+
+    #[test]
+    fn up_down_open_focus_clamp_pages_and_preserve_selected_patron() {
+        let mut scene = Scene::new();
+        scene.page_task_key(true);
+        assert!(scene.selected.is_none());
+        scene.set_sessions(&[session("a", State::Work), session("b", State::Idle)]);
+        scene.set_details(vec![SessionDetail {
+            target: None,
+            id: "a".into(),
+            task: "One two three four five six seven eight nine ten eleven twelve".into(),
+        }]);
+        scene.page_task_key(false);
+        assert_eq!(scene.selected.as_deref(), Some("a"));
+        assert_eq!(scene.task_page, 0);
+        scene.page_task_key(false);
+        assert_eq!(scene.task_page, 0);
+        let last = scene.selected_task_pages().len() - 1;
+        for _ in 0..20 {
+            scene.page_task_key(true);
+        }
+        assert_eq!(scene.task_page, last);
+        assert_eq!(scene.selected.as_deref(), Some("a"));
+        for _ in 0..20 {
+            scene.page_task_key(false);
+        }
+        assert_eq!(scene.task_page, 0);
+        scene.select_next();
+        scene.page_task_key(true);
+        scene.page_task_key(false);
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+        assert_eq!(scene.task_page, 0);
+        scene.clear_selection();
+        scene.page_task_key(true);
+        assert_eq!(scene.task_page, 0);
+        scene.set_details(vec![SessionDetail { target: None, id: "a".into(), task: "Short".into() }]);
+        scene.page_task_key(true);
+        assert_eq!(scene.task_page, 0);
+    }
+
+    #[test]
+    fn banner_and_arrows_keep_highlight_and_footer_on_same_identity() {
+        let mut scene = Scene::new();
+        scene.set_sessions(&[session("a", State::Work), session("b", State::Work), session("c", State::Idle)]);
+        scene.set_details(vec![SessionDetail {
+            target: None,
+            id: "b".into(),
+            task: "Unique task for patron B".into(),
+        }]);
+        scene.click(100, 220); // open A
+        scene.click(100, 220); // next B
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+        assert_eq!(scene.agents.iter().find(|a| Some(&a.id) == scene.selected.as_ref()).unwrap().seat, 1);
+        assert_eq!(scene.selected_task_pages()[0], "Unique task for\npatron B");
+        scene.select_patron(false);
+        assert_eq!(scene.selected.as_deref(), Some("a"));
+        scene.select_patron(false);
+        assert_eq!(scene.selected.as_deref(), Some("c"));
+        scene.select_patron(true);
+        assert_eq!(scene.selected.as_deref(), Some("a"));
+        scene.select_patron(true);
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+        scene.click(290, 239);
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+        assert_eq!(scene.task_page, scene.selected_task_pages().len() - 1); // scrollbar changes text only
+    }
+
+    #[test]
+    fn selection_tracks_identity_and_updates_without_resetting_pages() {
+        let mut scene = Scene::new();
+        scene.set_sessions(&[session("a", State::Work), session("b", State::Idle)]);
+        scene.set_details(vec![SessionDetail {
+            target: None,
+            id: "b".into(),
+            task: "A sufficiently long request to require multiple readable pages".into(),
+        }]);
+        scene.click(120, 80);
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+        scene.page_task(true);
+        assert_eq!(scene.task_page, 1);
+        scene.set_sessions(&[session("b", State::Work), session("a", State::Idle)]);
+        scene.set_details(scene.details.clone());
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+        assert_eq!(scene.task_page, 1);
+        scene.set_details(vec![SessionDetail { target: None, id: "b".into(), task: "New request".into() }]);
+        assert_eq!(scene.task_page, 0);
+        scene.set_sessions(&[session("a", State::Work)]);
+        assert!(scene.selected.is_none());
+    }
+
+    #[test]
+    fn keyboard_selection_includes_overflow_and_page_wrap_handles_unicode() {
+        let mut scene = Scene::new();
+        scene.set_sessions(&(0..10).map(|i| session(&i.to_string(), State::Work)).collect::<Vec<_>>());
+        for _ in 0..10 {
+            scene.select_next();
+        }
+        assert_eq!(scene.selected.as_deref(), Some("9"));
+        scene.select_next();
+        assert_eq!(scene.selected.as_deref(), Some("0"));
+        let pages = task_pages(&format!("{} other words", "é".repeat(49)));
+        assert!(
+            pages.iter().all(|p| p.lines().count() <= 2 && p.lines().all(|line| line.chars().count() <= TASK_LINE_LEN))
+        );
+        assert_eq!(pages.concat().chars().filter(|c| *c == 'é').count(), 49);
+        scene.clear_selection();
+        scene.page_task(false);
+        assert_eq!(scene.task_page, 0);
+    }
+
+    #[test]
+    fn waiting_alert_remains_available_while_manual_focus_is_usable() {
+        let mut scene = Scene::new();
+        scene.set_sessions(&[session("a", State::Wait), session("b", State::Work)]);
+        let mut before = vec![0; a::W * a::H];
+        let mut selected = before.clone();
+        let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        scene.render(&mut before, now);
+        scene.click(120, 80);
+        scene.render(&mut selected, now);
+        assert_ne!(&before[a::WIN_Y as usize * a::W..], &selected[a::WIN_Y as usize * a::W..]);
+        scene.click(120, 80);
+        scene.render(&mut selected, now);
+        assert_eq!(&before[a::WIN_Y as usize * a::W..], &selected[a::WIN_Y as usize * a::W..]);
+        scene.click(120, 80);
+        scene.set_sessions(&[session("a", State::Idle), session("b", State::Work)]);
+        scene.render(&mut selected, now);
+        assert_ne!(&before[a::WIN_Y as usize * a::W..], &selected[a::WIN_Y as usize * a::W..]);
+        assert_eq!(scene.selected.as_deref(), Some("b"));
+    }
 
     #[test]
     fn shorten_keeps_the_suffix() {

@@ -35,6 +35,7 @@ impl Claude {
 
 #[derive(Clone)]
 struct DesktopSession {
+    desktop_id: Option<String>,
     id: String,
     title: String,
     archived: bool,
@@ -47,6 +48,7 @@ fn desktop_session(raw: &[u8]) -> Option<DesktopSession> {
         return None;
     }
     Some(DesktopSession {
+        desktop_id: d.get("sessionId").and_then(Value::as_str).map(str::to_owned),
         id,
         title: d.get("title").and_then(Value::as_str).unwrap_or("").to_owned(),
         archived: d.get("isArchived").and_then(Value::as_bool).unwrap_or(false),
@@ -174,6 +176,10 @@ fn sessions_at(
                 why,
                 since,
                 started: millis(&d, &["startedAt"]).unwrap_or(0.0) / 1000.0,
+                session_id: d.get("sessionId").and_then(Value::as_str).unwrap_or("").to_owned(),
+                project: cwd.to_owned(),
+                transcript: None,
+                target: metadata.and_then(|s| s.desktop_id.clone()).map(crate::scene::SessionTarget::Claude),
             },
         );
     }
@@ -188,7 +194,7 @@ mod tests {
     #[test]
     fn desktop_history_only_enriches_live_sessions_and_keeps_waiting_state() {
         let dir = TestDir::new();
-        let raw = serde_json::json!({"sessionId":"local-ui-id", "cliSessionId":"live-cli-id", "title":"Moon Café", "isArchived":false});
+        let raw = serde_json::json!({"sessionId":"local_ui-id", "cliSessionId":"live-cli-id", "title":"Moon Café", "isArchived":false});
         let metadata = desktop_session(raw.to_string().as_bytes()).unwrap();
         let mut desktop = HashMap::from([(metadata.id.clone(), metadata)]);
         assert!(sessions_at(1.0, &dir.0, &desktop, |_, _| true).is_empty());
@@ -199,6 +205,10 @@ mod tests {
         fs::write(dir.0.join("43.json"), status.to_string()).unwrap();
         let found = sessions_at(2.0, &dir.0, &desktop, |pid, _| pid == 42);
         assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].target.as_ref().and_then(|t| t.url()).as_deref(),
+            Some("claude://code/continue?session=local_ui-id")
+        );
         assert_eq!(found[0].name, "Moon Café");
         assert_eq!(found[0].state, State::Wait);
         assert_eq!(found[0].why, Why::Perm);

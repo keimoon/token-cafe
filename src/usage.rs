@@ -386,8 +386,9 @@ impl Counter {
                     Some(e) if e.stamp == stamp => e,
                     _ => {
                         reparsed += 1;
-                        // a transcript that cannot be read counts as empty until it changes
-                        Entry { stamp, days: parse(&path).unwrap_or_default() }
+                        // Retry transient read failures on the next poll instead of caching zero.
+                        let Ok(days) = parse(&path) else { continue };
+                        Entry { stamp, days }
                     }
                 };
                 for (d, t) in &entry.days {

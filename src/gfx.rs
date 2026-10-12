@@ -25,7 +25,7 @@ pub struct Gfx<'a> {
 }
 
 pub fn text_width(s: &str, k: i32) -> i32 {
-    let n = s.len() as i32;
+    let n = s.chars().count() as i32;
     if n > 0 { (n * 6 - 1) * k } else { 0 }
 }
 
@@ -134,8 +134,8 @@ impl<'a> Gfx<'a> {
             None => &[(c, 0)],
         };
         for &(col, o) in passes {
-            for (n, ch) in s.bytes().enumerate() {
-                let g = glyph(ch);
+            for (n, ch) in s.chars().enumerate() {
+                let g = glyph(if ch.is_ascii() { ch as u8 } else { b'?' });
                 for (j, bits) in g.iter().enumerate() {
                     for i in 0..5 {
                         if (bits >> (4 - i)) & 1 == 0 {

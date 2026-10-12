@@ -1,0 +1,31 @@
+name: Rust
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Linux window dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libxcursor1 libxkbcommon-x11-0 xvfb
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Linux X11 startup smoke test
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked
+          status=0
+          xvfb-run -a timeout 5s target/debug/token-cafe --demo --always-on-top || status=$?
+          test "$status" -eq 124
+      - name: Build macOS app bundle
+        if: runner.os == 'macOS'
+        run: ./tools/build_macos.sh

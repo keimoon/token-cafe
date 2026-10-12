@@ -1659,6 +1659,7 @@ dependencies = [
  "gif",
  "libc",
  "memchr",
+ "objc2-app-kit",
  "png",
  "rusqlite",
  "serde_json",

@@ -64,15 +64,27 @@ The bundle is for local use; it is not signed for distribution or notarized. Fin
 |---|---|
 | `token-cafe` | the live café |
 | `token-cafe --demo` | a full house showing every pose, no agents needed |
+| `token-cafe --session-info` | local task/activity diagnostic as one JSON snapshot |
+| `token-cafe --session-info --watch` | emit a snapshot when live session information changes |
 | `token-cafe --print` | list the live sessions and this month's usage in the terminal, then exit |
+| `token-cafe --always-on-top` | keep the café above other windows |
 | `token-cafe --scale N` | open at N × 320×240 (default 3) |
 
 | Key | |
 |---|---|
 | `1` – `6` | resize the window to that many times 320×240 |
 | `f` / `F11` | fullscreen (nice on a spare monitor) |
-| `Esc` | leave fullscreen |
+| tap a patron / bottom summary / `Tab` | select a session and show its task |
+| tap selected patron / empty desk | clear focus |
+| tap main bottom banner / `Left` / `Right` | cycle patrons, including overflow |
+| `Up` / `Down` / drag the scrollbar | page through the selected request |
+| `Esc` | leave fullscreen, or clear session selection |
+| `t` | toggle always on top (the title shows whether it is pinned) |
 | `q` | quit |
+
+On macOS, press `1` then `t` for a small floating café, or launch with `token-cafe --scale 1 --always-on-top`. It stays above ordinary windows when you switch apps in the same desktop Space. Press `t` again to unpin. The mode lasts until you quit; use the launch flag to start pinned.
+
+On Linux X11, pinning depends on window-manager support. Wayland does not expose the window-level API: the title shows “Pin via compositor”, `T` leaves the window unpinned, and `--always-on-top` prints an explanation. Configure a compositor window rule using the `token-cafe` app ID instead.
 
 The café is drawn at 320×240 and scaled by the largest whole number that fits, so the pixels stay crisp at any window size; the rest is letterboxed. Only what changes on screen is repainted, so a live café costs about 1% of a CPU core.
 
@@ -127,3 +139,35 @@ The renderer and window dependencies are cross-platform, but Windows process dis
 ## Credits
 
 The café started life on a 2.8″ ESP32-S3 desk display, as a little JRPG-style net café that sat next to the keyboard. This app brings the same patrons to your desktop.
+
+### Session information
+
+Click a patron to show its latest request in the bottom panel. Requests wrap into two-line pages, with up to 19 characters per line. Use Up/Down, scroll the mouse wheel over the bottom panel, or click/drag its vertical scrollbar to read the request. Up/Down opens focus on page one when nothing is selected and stops at the first/last page. The scrollbar thumb shows position in the text; its full 44×48 surrounding region accepts taps. Tap the main banner or press Left/Right to switch patrons; the pointing hand, portrait, and task details change together. Tap the selected patron or an empty desk to clear focus; tap the unfocused bottom panel to open it. Tab cycles all live sessions, including those outside. Escape clears selection when not in fullscreen. Native touch taps are accepted on release, with drags, cancellation and duplicate emulated mouse input filtered. Selection stays with the session through updates; a closed session clears it. Approval/question alerts appear when unfocused; manual focus keeps a waiting count visible without blocking selection. Idle sessions show `LAST` rather than implying ongoing work. Unsupported font characters display as one `?` each.
+
+`--session-info` reads transcripts only for sessions confirmed by the live collectors. It prints identity, project, state, the latest human-request excerpt, public assistant text, and the last observed tool action. Evidence includes its source and timestamp; tool actions also include the tool name. Idle sessions explicitly label the request as historical (`task_scope: last_request`). Missing details stay null with a state-based fallback.
+
+`--session-info --watch` polls once a second and emits a complete JSON snapshot only when it changes, including an empty list when all sessions close. Stop with Ctrl-C. The same collector supplies the café focus panel. It makes no model/network calls. Its output contains local request excerpts, project paths, and transcript paths.
+
+Tool status is conservative: `observed` means a call was logged, `returned` means its tool result arrived (not necessarily that a subprocess finished or tests passed), and `failed` requires an explicit Claude tool-error flag. A turn ending without a result is `ended_without_result`. Opaque wrapper tools show `USING TOOL` with their name. Raw tool arguments, output, and reasoning are not displayed. Request excerpts are limited to 160 characters, not AI-generated summaries; context-only and synthetic messages are skipped conservatively.
+
+Codex details come from the matched root rollout. Claude transcript filenames must match the full live session ID under a top-level project directory; missing or ambiguous matches remain unavailable. Transcript discovery is refreshed every five seconds. On first read, at most the last 8 MiB is scanned, then only appended complete records; records over 1 MiB are skipped. `history_partial` flags truncated history or skipped oversized records, so an older task may be unavailable. File replacement/truncation clears cached evidence, and closed sessions evict it.
+
+The macOS app icon reuses the café patron head. To regenerate it on macOS, run `swift tools/generate_icon.swift`, then `iconutil -c icns assets/TokenCafe.iconset -o assets/TokenCafe.icns`, and rebuild the bundle.
+
+On macOS, double-click or double-tap a patron to open its existing Codex or Claude Desktop session. Single clicks still select or clear focus. CLI-only sessions without a desktop mapping cannot be opened this way. Claude navigation uses the installed Desktop app's `code/continue` route, which may change between versions.
+
+On macOS, a pinned café becomes 60% opaque while unfocused, so the window behind it remains visible. Focusing the café or turning off pinning restores full opacity.
+
+The macOS title bar hides while the café is unfocused and returns when you click back into the window.
+
+### Platform behavior
+
+| Feature | macOS | Linux X11 | Linux Wayland |
+|---|---|---|---|
+| Patron selection, task scrolling, keyboard and touch input | Yes | Yes | Yes |
+| Always on top (`T` / `--always-on-top`) | Yes | Window-manager dependent | Configure a compositor window rule |
+| Unfocused translucency and hidden title bar | Yes | Normal opaque window and decorations | Normal opaque window and decorations |
+| Double-click to open a desktop session | Yes, with a known desktop session | Regular selection only | Regular selection only |
+| Patron app-bundle icon | Yes | macOS bundle asset only | macOS bundle asset only |
+
+Wayland does not expose the window-level API used for pinning. The title shows “Pin via compositor” and `T` does not claim to enable pinning there. Use the `token-cafe` app ID for compositor rules. macOS AppKit dependencies and native navigation code are compiled only on macOS.

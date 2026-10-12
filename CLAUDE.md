@@ -4,7 +4,8 @@ A Rust desktop app that shows the Claude Code and Codex sessions on this machine
 
 ## Commands
 
-- `cargo build --release`, then `target/release/token-cafe` (live), `--demo` (fixed list showing every pose), `--print` (sessions and month total as text), `--scale N` (initial size, default 3x). Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, q quit.
+- `cargo build --release`, then `target/release/token-cafe` (live), `--demo` (fixed list showing every pose), `--print` (sessions and month total as text), `--scale N` (initial size, default 3x). Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen/clear selection, Tab next session, Left/Right select patron, Up/Down task page, t toggle always on top, q quit. `--always-on-top` starts pinned; combine with `--scale 1` for a small floating café.
+- `--session-info` prints task/activity JSON for live sessions; add `--watch` for changed snapshots every second. `src/collect/info.rs` is an opt-in, bounded incremental transcript reader; it also supplies the selectable focus panel. Tap a patron or the bottom summary to select; tap the selected patron or an empty desk to clear. Left/Right or the main banner cycles patrons; Up/Down, the mouse wheel, or the right-hand scrollbar navigates two-line task pages. Escape clears selection outside fullscreen. Keep evidence sources/timestamps and distinguish observed tool calls from returned results.
 - `cargo test`, `cargo clippy --all-targets` (kept warning-free), `cargo fmt` (`rustfmt.toml`: width 120).
 - After editing `design/cafe.js`: `node tools/gen_assets.mjs`, then `cargo run --release --example screenshots` to refresh the README images in `docs/`.
 
@@ -21,7 +22,7 @@ A Rust desktop app that shows the Claude Code and Codex sessions on this machine
 
 - The scene ticks in fixed 33 ms steps. The first session list seats everyone at once; later newcomers walk in from the door and leavers walk out. 8 seats; the rest wait outside. A patron's looks are an FNV-1a hash of the session id.
 - Idle patrons stretch or sip, take coffee after 2 min and fall asleep after 10. `Session::age_s` (time in the current state) keeps that right across an app restart.
-- Names are shortened in the scene, 12 characters for the message window and 8 for the nameplate, keeping a `-1c` style suffix of up to 3 characters.
+- Names are shortened in the scene, an ellipsis for the message window and 8 characters for the nameplate, keeping a `-1c` style suffix of up to 3 characters.
 - Claude Code: `~/.claude/sessions/<pid>.json` (status busy/idle/waiting, `waitingFor`: "permission prompt" -> "!", anything else -> "?"). A file counts only while its `procStart` (clock ticks since boot) equals field 22 of `/proc/<pid>/stat`, so dead or reused pids are skipped. On macOS, compare its formatted `procStart` date with the native process start time, falling back to `startedAt` for older files.
 - Claude desktop: Code-tab sessions use the same live PID/status records. Join `cliSessionId` to the cached macOS `claude-code-sessions` metadata for titles/archive flags; never treat saved history as liveness. Ordinary Chat and Cowork are not collected.
 - Codex CLI: `codex` TUI processes (subcommands like `exec` and `mcp` are not sessions) -> the rollout JSONL they hold open, else the newest `threads` row for their cwd in `~/.codex/state_5.sqlite` -> last `task_started` vs `task_complete`/`turn_aborted`. The first read scans back in 256 KB chunks until a task event turns up; later reads take only what was appended. Codex logs no approval requests, so it never shows "wait".

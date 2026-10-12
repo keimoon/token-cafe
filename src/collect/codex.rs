@@ -107,6 +107,7 @@ struct Process {
 /// session it belongs to.
 #[derive(Clone)]
 struct Rollout {
+    path: PathBuf,
     offset: u64,
     state: State,
     since: f64,
@@ -289,6 +290,7 @@ impl Codex {
                 };
                 let (ev, done) = scan_back(&mut f, size).ok()?;
                 let r = Rollout {
+                    path: path.to_owned(),
                     offset: done,
                     state: ev.map_or(State::Idle, |e| e.0),
                     since: ev.and_then(|e| e.1).filter(|&t| t != 0.0).unwrap_or(mtime),
@@ -347,6 +349,10 @@ impl Codex {
                         why: Why::None,
                         since: r.since,
                         started: r.started,
+                        session_id: r.session.clone(),
+                        project: cwd.to_owned(),
+                        transcript: Some(r.path.clone()),
+                        target: Some(crate::scene::SessionTarget::Codex(r.session.clone())),
                     };
                     insert_session(&mut out, &r.session, found);
                 }
@@ -370,6 +376,10 @@ impl Codex {
                 why: Why::None,
                 since,
                 started: p.start,
+                session_id: uuid.clone(),
+                target: None,
+                project: p.cwd.clone(),
+                transcript: infos.iter().find(|r| !r.child && r.session == uuid).map(|r| r.path.clone()),
             };
             insert_session(&mut out, &uuid, found);
         }
@@ -399,14 +409,19 @@ fn session_name(cwd: &str, uuid: &str) -> String {
     format!("{}-{suffix}", if dir.is_empty() { "codex" } else { dir })
 }
 
-fn insert_session(out: &mut HashMap<String, Found>, uuid: &str, found: Found) {
+fn insert_session(out: &mut HashMap<String, Found>, uuid: &str, mut found: Found) {
     match out.entry(uuid.to_owned()) {
         std::collections::hash_map::Entry::Vacant(entry) => {
             entry.insert(found);
         }
         std::collections::hash_map::Entry::Occupied(mut entry) => {
             if found.since > entry.get().since {
+                if found.target.is_none() {
+                    found.target = entry.get().target.clone();
+                }
                 entry.insert(found);
+            } else if entry.get().target.is_none() {
+                entry.get_mut().target = found.target;
             }
         }
     }
@@ -484,6 +499,8 @@ mod tests {
         assert_eq!(a_found.state, State::Work);
         assert_eq!(b_found.state, State::Idle); // stale child does not keep parent busy
         assert!(a_found.started > 0.0);
+        assert_eq!(a_found.transcript.as_ref(), Some(&a));
+        assert_eq!(a_found.session_id, "root-00000001");
 
         let mut file = fs::OpenOptions::new().append(true).open(&a).unwrap();
         writeln!(file, "{}", event_line("task_complete", "2026-10-12T01:02:00Z")).unwrap();
@@ -531,6 +548,7 @@ mod tests {
         let mut collector = Codex::default();
         let found = collector.collect(1.0, vec![cli, server(&[path])], None);
         assert_eq!(found.len(), 1);
+        assert!(found[0].target.is_some());
         assert_eq!(found[0].name, "moon-cafe-ot");
     }
 }

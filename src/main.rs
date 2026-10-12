@@ -7,7 +7,8 @@
 //!   token-cafe --demo       a fixed list that shows every pose
 //!   token-cafe --print      print the sessions and this month's usage, and exit
 //!   token-cafe --scale N    start at N times 320x240 (default 3)
-//! Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, q quit.
+//!   token-cafe --always-on-top  keep the café above other windows
+//! Keys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen/clear selection, Tab next session, Left/Right select patron, Up/Down task page, t toggle always on top, q quit.
 
 mod app;
 
@@ -16,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use token_cafe::collect::Collector;
-use token_cafe::scene::{ForcedPose, Kind, Session, State, Usage, Why};
+use token_cafe::scene::{ForcedPose, Kind, Session, SessionDetail, State, Usage, Why};
 use token_cafe::usage::{Counter, human};
 
 const POLL: Duration = Duration::from_secs(1); // how often the sessions are read
@@ -25,6 +26,7 @@ const USAGE_EVERY: Duration = Duration::from_secs(60); // how often this month's
 /// What the feeder threads hand the window.
 pub enum Update {
     Sessions(Vec<Session>),
+    Details(Vec<SessionDetail>),
     Usage(Usage),
 }
 
@@ -51,14 +53,14 @@ fn sessions_feed(tx: Sender<Update>) {
     let mut collector = Collector::new();
     let mut last = None;
     loop {
-        let list = collector.sessions();
+        let (list, details) = collector.sessions_with_details();
         let seen: Vec<String> = list.iter().map(|s| format!("{}:{}", s.id, describe(s))).collect();
         if last.as_ref() != Some(&seen) {
             let names: Vec<String> = list.iter().map(describe).collect();
             log(&format!("sessions: {}", if names.is_empty() { "none".into() } else { names.join(", ") }));
             last = Some(seen);
         }
-        if tx.send(Update::Sessions(list)).is_err() {
+        if tx.send(Update::Sessions(list)).is_err() || tx.send(Update::Details(details)).is_err() {
             return;
         }
         thread::sleep(POLL);
@@ -104,6 +106,22 @@ fn demo_feed(tx: Sender<Update>) {
         s("9a7c33d0", "billing", Claude, Idle, Why::None, P::Stretch),
         s("01a11478", "ml-pipeline-6e", Codex, Work, Why::None, P::Auto),
     ];
+    let tasks = [
+        "Implement request tracing and verify the API handles retries without duplicate operations.",
+        "Review the checkout permissions before continuing with the deployment.",
+        "Update docs.",
+        "Migrate stored settings while keeping existing preferences intact.",
+        "Choose which infrastructure region should host the preview environment.",
+        "", // Missing transcript fixture.
+        "Verify invoice rounding across supported currencies.",
+        "Train the evaluation pipeline and compare the results with the previous baseline.",
+    ];
+    let details = list
+        .iter()
+        .zip(tasks)
+        .map(|(s, task)| SessionDetail { target: None, id: s.id.clone(), task: task.into() })
+        .collect();
+    let _ = tx.send(Update::Details(details));
     let _ = tx.send(Update::Usage(Usage { tokens: 1_624_000_000.0, usd: 693.70 }));
     while tx.send(Update::Sessions(list.clone())).is_ok() {
         thread::sleep(POLL);
@@ -131,28 +149,66 @@ fn print_once() {
     println!("this month: {} tokens ({}), ${:.2}", human(u.tokens), u.tokens, u.usd);
 }
 
+fn print_session_info(watch: bool) {
+    let mut collector = Collector::new();
+    let mut last = None;
+    loop {
+        let sessions = collector.session_info();
+        let snapshot = serde_json::json!({"sessions": sessions.iter().map(|s| s.json()).collect::<Vec<_>>()});
+        if last.as_ref() != Some(&snapshot) {
+            println!("{snapshot}");
+            last = Some(snapshot);
+        }
+        if !watch {
+            break;
+        }
+        thread::sleep(POLL);
+    }
+}
+
 fn usage_text() -> &'static str {
-    "usage: token-cafe [--demo | --print] [--scale N]\n\
+    "usage: token-cafe [--demo | --print | --session-info [--watch]] [--scale N] [--always-on-top]\n\
+     \n  --session-info  print local session tasks and observed activity as JSON\
+     \n  --watch    with --session-info, emit snapshots when they change\
      \n  --demo     a fixed list that shows every pose\
      \n  --print    print the sessions and this month's usage, and exit\
      \n  --scale N  start at N times 320x240 (default 3)\
-     \n\nkeys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen, q quit"
+     \n  --always-on-top  keep the café above other windows\
+     \n\nkeys: 1-6 window size, f / F11 fullscreen, Esc leave fullscreen/clear selection, Tab next session, Left/Right select patron, Up/Down task page, t toggle always on top, q quit"
 }
 
 fn main() {
     let (mut demo, mut print, mut scale) = (false, false, 3u32);
+    let (mut session_info, mut watch) = (false, false);
+    let mut always_on_top = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--session-info" => session_info = true,
+            "--watch" => watch = true,
+            "--always-on-top" => always_on_top = true,
             "--demo" => demo = true,
             "--print" => print = true,
             "--scale" => match args.next().and_then(|v| v.parse().ok()).filter(|&k| (1..=16).contains(&k)) {
                 Some(k) => scale = k,
-                None => return eprintln!("--scale wants a whole number from 1 to 16\n\n{}", usage_text()),
+                None => {
+                    eprintln!("--scale wants a whole number from 1 to 16\n\n{}", usage_text());
+                    std::process::exit(2);
+                }
             },
             "-h" | "--help" => return println!("{}", usage_text()),
-            other => return eprintln!("unknown argument {other}\n\n{}", usage_text()),
+            other => {
+                eprintln!("unknown argument {other}\n\n{}", usage_text());
+                std::process::exit(2);
+            }
         }
+    }
+    if (watch && !session_info) || (session_info && (demo || print)) || (demo && print) {
+        eprintln!("--watch requires --session-info; choose only one of --demo, --print, or --session-info");
+        std::process::exit(2);
+    }
+    if session_info {
+        return print_session_info(watch);
     }
     if print {
         return print_once();
@@ -165,7 +221,7 @@ fn main() {
         thread::spawn(move || sessions_feed(tx));
         thread::spawn(move || usage_feed(tx2));
     }
-    if let Err(e) = app::run(rx, scale) {
+    if let Err(e) = app::run(rx, scale, always_on_top) {
         eprintln!("token-cafe: {e}");
         std::process::exit(1);
     }
